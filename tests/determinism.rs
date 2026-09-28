@@ -82,6 +82,13 @@ fn realistic_values_are_solved_consistently() {
     assert_deterministic(include_str!("layouts/realistic_values.txt"), 100);
 }
 
+/// Minimum sizes that add up to exactly the available space (ratatui#1855) used to make the
+/// solver hang in most runs.
+#[test]
+fn min_sizes_filling_the_area_are_solved_consistently() {
+    assert_deterministic(include_str!("layouts/min_sizes_filling_the_area.txt"), 10);
+}
+
 /// Constraint values far larger than the available space made failures more likely.
 #[test]
 fn extreme_values_are_solved_consistently() {
