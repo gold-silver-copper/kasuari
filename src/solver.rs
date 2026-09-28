@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 use core::f64;
 
 use hashbrown::hash_map::Entry;
-use hashbrown::{HashMap, HashSet};
 
 use crate::constraint::Constraint;
+use crate::hasher::{HashMap, HashSet};
 use crate::row::{near_zero, Row, Symbol, SymbolKind};
 use crate::strength::Strength;
 use crate::{
@@ -84,14 +84,14 @@ impl Solver {
     /// Construct a new solver.
     pub fn new() -> Solver {
         Solver {
-            constraints: HashMap::new(),
-            var_data: HashMap::new(),
-            var_for_symbol: HashMap::new(),
+            constraints: HashMap::default(),
+            var_data: HashMap::default(),
+            var_for_symbol: HashMap::default(),
             public_changes: Vec::new(),
-            changed: HashSet::new(),
+            changed: HashSet::default(),
             should_clear_changes: false,
-            rows: HashMap::new(),
-            edits: HashMap::new(),
+            rows: HashMap::default(),
+            edits: HashMap::default(),
             infeasible_rows: BTreeSet::new(),
             objective: Row::new(0.0),
             artificial: None,

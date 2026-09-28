@@ -240,6 +240,7 @@ extern crate alloc;
 mod constraint;
 mod error;
 mod expression;
+mod hasher;
 mod relations;
 mod row;
 mod solver;
