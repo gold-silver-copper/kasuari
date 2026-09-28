@@ -33,6 +33,10 @@ struct Tag {
     other: Symbol,
 }
 
+/// The number of pivots in a row that don't decrease the objective after which `optimize` switches
+/// from the most negative coefficient to Bland's rule, to prevent cycling.
+const MAX_DEGENERATE_PIVOTS: usize = 200;
+
 #[derive(Copy, Clone)]
 enum OptimizeTarget {
     Objective,
@@ -53,7 +57,8 @@ struct EditInfo {
 /// Whenever the solver has to choose between symbols, it doesn't depend on that order: it chooses
 /// by coefficient or ratio, and between equal ones, the symbol with the lowest id. Otherwise the
 /// solution could differ between runs when there is more than one optimal solution, and the
-/// number of pivots could vary widely.
+/// number of pivots could vary widely. After many pivots in a row that don't decrease the
+/// objective, it uses Bland's rule until one does, so that it can't cycle.
 pub struct Solver {
     constraints: HashMap<Constraint, Tag>,
     var_data: HashMap<Variable, (f64, Symbol, usize)>,
@@ -602,13 +607,15 @@ impl Solver {
     /// This method performs iterations of Phase 2 of the simplex method
     /// until the objective function reaches a minimum.
     fn optimize(&mut self, target: OptimizeTarget) -> Result<(), InternalSolverError> {
+        // The number of pivots in a row that didn't decrease the objective
+        let mut degenerate_pivots = 0;
         loop {
-            let entering = {
-                let objective = match target {
-                    OptimizeTarget::Objective => &self.objective,
-                    OptimizeTarget::Artificial => self.artificial.as_ref().unwrap(),
-                };
+            let objective = self.optimize_target(target);
+            let objective_before = objective.constant;
+            let entering = if degenerate_pivots < MAX_DEGENERATE_PIVOTS {
                 Solver::get_entering_symbol(objective)
+            } else {
+                Solver::get_lowest_entering_symbol(objective)
             };
             if entering.kind() == SymbolKind::Invalid {
                 return Ok(());
@@ -624,6 +631,19 @@ impl Solver {
                 self.var_changed(v);
             }
             self.rows.insert(entering, row);
+            if self.optimize_target(target).constant < objective_before {
+                degenerate_pivots = 0;
+            } else {
+                degenerate_pivots += 1;
+            }
+        }
+    }
+
+    /// Get the objective function that `optimize` minimizes for the given target.
+    fn optimize_target(&self, target: OptimizeTarget) -> &Row {
+        match target {
+            OptimizeTarget::Objective => &self.objective,
+            OptimizeTarget::Artificial => self.artificial.as_ref().unwrap(),
         }
     }
 
@@ -669,6 +689,9 @@ impl Solver {
     /// coefficients are equal. If no symbol has a coefficient less than zero,
     /// it means the objective function is at a minimum, and an invalid symbol
     /// is returned.
+    ///
+    /// This usually needs the fewest pivots, but can cycle when pivots don't
+    /// decrease the objective (see `get_lowest_entering_symbol`).
     /// Could return an External symbol
     fn get_entering_symbol(objective: &Row) -> Symbol {
         let mut entering = Symbol::invalid();
@@ -680,6 +703,24 @@ impl Solver {
             }
         }
         entering
+    }
+
+    /// Compute the entering variable for a pivot operation using Bland's rule.
+    ///
+    /// This method will return the non-dummy symbol with the lowest id and a
+    /// coefficient less than zero in the objective function, or an invalid
+    /// symbol if there is none. Together with `get_leaving_row` choosing the
+    /// lowest id between equal ratios, this can't cycle, but usually needs
+    /// more pivots than `get_entering_symbol`.
+    /// Could return an External symbol
+    fn get_lowest_entering_symbol(objective: &Row) -> Symbol {
+        objective
+            .cells
+            .iter()
+            .filter(|(symbol, value)| symbol.kind() != SymbolKind::Dummy && **value < 0.0)
+            .map(|(symbol, _)| *symbol)
+            .min()
+            .unwrap_or_else(Symbol::invalid)
     }
 
     /// Compute the entering symbol for the dual optimize operation.
