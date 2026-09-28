@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::f64;
 
@@ -47,6 +48,12 @@ struct EditInfo {
 
 /// A constraint solver using the Cassowary algorithm. For proper usage please see the top level
 /// crate documentation.
+///
+/// The rows and cells of the tableau are stored in hash maps whose iteration order is random.
+/// Whenever the solver has to choose between symbols, it doesn't depend on that order: it chooses
+/// by coefficient or ratio, and between equal ones, the symbol with the lowest id. Otherwise the
+/// solution could differ between runs when there is more than one optimal solution, and the
+/// number of pivots could vary widely.
 pub struct Solver {
     constraints: HashMap<Constraint, Tag>,
     var_data: HashMap<Variable, (f64, Symbol, usize)>,
@@ -56,7 +63,7 @@ pub struct Solver {
     should_clear_changes: bool,
     rows: HashMap<Symbol, Box<Row>>,
     edits: HashMap<Variable, EditInfo>,
-    infeasible_rows: Vec<Symbol>, // never contains external symbols
+    infeasible_rows: BTreeSet<Symbol>, // never contains external symbols
     objective: Row,
     artificial: Option<Row>,
     id_tick: usize,
@@ -80,7 +87,7 @@ impl Solver {
             should_clear_changes: false,
             rows: HashMap::new(),
             edits: HashMap::new(),
-            infeasible_rows: Vec::new(),
+            infeasible_rows: BTreeSet::new(),
             objective: Row::new(0.0),
             artificial: None,
             id_tick: 1,
@@ -289,7 +296,7 @@ impl Solver {
                 .get_mut(&info_tag_marker)
                 .map(|row| {
                     if row.add(-delta) < 0.0 {
-                        infeasible_rows.push(info_tag_marker);
+                        infeasible_rows.insert(info_tag_marker);
                     }
                 })
                 .is_some()
@@ -298,7 +305,7 @@ impl Solver {
                     .get_mut(&info_tag_other)
                     .map(|row| {
                         if row.add(delta) < 0.0 {
-                            infeasible_rows.push(info_tag_other);
+                            infeasible_rows.insert(info_tag_other);
                         }
                     })
                     .is_some()
@@ -318,7 +325,7 @@ impl Solver {
                     }
                     if coeff != 0.0 && row.add(diff) < 0.0 && symbol.kind() != SymbolKind::External
                     {
-                        infeasible_rows.push(*symbol);
+                        infeasible_rows.insert(*symbol);
                     }
                 }
             }
@@ -499,15 +506,18 @@ impl Solver {
     ///
     /// The symbols are chosen according to the following precedence:
     ///
-    /// 1) The first symbol representing an external variable.
+    /// 1) The symbol with the lowest id representing an external variable.
     /// 2) A negative slack or error tag variable.
     ///
     /// If a subject cannot be found, an invalid symbol will be returned.
     fn choose_subject(row: &Row, tag: &Tag) -> Symbol {
-        for s in row.cells.keys() {
-            if s.kind() == SymbolKind::External {
-                return *s;
-            }
+        if let Some(s) = row
+            .cells
+            .keys()
+            .filter(|s| s.kind() == SymbolKind::External)
+            .min()
+        {
+            return *s;
         }
         if (tag.marker.kind() == SymbolKind::Slack || tag.marker.kind() == SymbolKind::Error)
             && row.coefficient_for(tag.marker) < 0.0
@@ -578,7 +588,7 @@ impl Solver {
                 self.changed.insert(v);
             }
             if other_symbol.kind() != SymbolKind::External && other_row.constant < 0.0 {
-                self.infeasible_rows.push(other_symbol);
+                self.infeasible_rows.insert(other_symbol);
             }
         }
         self.objective.substitute(symbol, row);
@@ -624,7 +634,7 @@ impl Solver {
     /// an iteration of the dual simplex method to make the solution both
     /// optimal and feasible.
     fn dual_optimize(&mut self) -> Result<(), InternalSolverError> {
-        while let Some(leaving) = self.infeasible_rows.pop() {
+        while let Some(leaving) = self.infeasible_rows.pop_first() {
             let row = if let Entry::Occupied(entry) = self.rows.entry(leaving) {
                 if entry.get().constant < 0.0 {
                     Some(entry.remove())
@@ -654,25 +664,30 @@ impl Solver {
 
     /// Compute the entering variable for a pivot operation.
     ///
-    /// This method will return first symbol in the objective function which
-    /// is non-dummy and has a coefficient less than zero. If no symbol meets
-    /// the criteria, it means the objective function is at a minimum, and an
-    /// invalid symbol is returned.
+    /// This method will return the non-dummy symbol with the most negative
+    /// coefficient in the objective function, preferring the lowest id when
+    /// coefficients are equal. If no symbol has a coefficient less than zero,
+    /// it means the objective function is at a minimum, and an invalid symbol
+    /// is returned.
     /// Could return an External symbol
     fn get_entering_symbol(objective: &Row) -> Symbol {
-        for (symbol, value) in &objective.cells {
-            if symbol.kind() != SymbolKind::Dummy && *value < 0.0 {
-                return *symbol;
+        let mut entering = Symbol::invalid();
+        let mut lowest = 0.0;
+        for (&symbol, &value) in &objective.cells {
+            if symbol.kind() != SymbolKind::Dummy && (value, symbol) < (lowest, entering) {
+                lowest = value;
+                entering = symbol;
             }
         }
-        Symbol::invalid()
+        entering
     }
 
     /// Compute the entering symbol for the dual optimize operation.
     ///
     /// This method will return the symbol in the row which has a positive
     /// coefficient and yields the minimum ratio for its respective symbol
-    /// in the objective function. The provided row *must* be infeasible.
+    /// in the objective function, preferring the lowest id when ratios are
+    /// equal. The provided row *must* be infeasible.
     /// If no symbol is found which meats the criteria, an invalid symbol
     /// is returned.
     /// Could return an External symbol
@@ -683,7 +698,7 @@ impl Solver {
             if *value > 0.0 && symbol.kind() != SymbolKind::Dummy {
                 let coeff = self.objective.coefficient_for(*symbol);
                 let r = coeff / *value;
-                if r < ratio {
+                if (r, *symbol) < (ratio, entering) {
                     ratio = r;
                     entering = *symbol;
                 }
@@ -692,17 +707,19 @@ impl Solver {
         entering
     }
 
-    /// Get the first Slack or Error symbol in the row.
+    /// Get the Slack or Error symbol with the lowest id in the row.
     ///
     /// If no such symbol is present, and Invalid symbol will be returned.
     /// Never returns an External symbol
     fn any_pivotable_symbol(row: &Row) -> Symbol {
-        for symbol in row.cells.keys() {
-            if symbol.kind() == SymbolKind::Slack || symbol.kind() == SymbolKind::Error {
-                return *symbol;
-            }
-        }
-        Symbol::invalid()
+        row.cells
+            .keys()
+            .filter(|symbol| {
+                symbol.kind() == SymbolKind::Slack || symbol.kind() == SymbolKind::Error
+            })
+            .min()
+            .copied()
+            .unwrap_or_else(Symbol::invalid)
     }
 
     /// Compute the row which holds the exit symbol for a pivot.
@@ -710,7 +727,8 @@ impl Solver {
     /// This method will return an iterator to the row in the row map
     /// which holds the exit symbol. If no appropriate exit symbol is
     /// found, the end() iterator will be returned. This indicates that
-    /// the objective function is unbounded.
+    /// the objective function is unbounded. When several rows have the
+    /// same ratio, the row with the lowest id is chosen.
     /// Never returns a row for an External symbol
     fn get_leaving_row(&mut self, entering: Symbol) -> Option<(Symbol, Box<Row>)> {
         let mut ratio = f64::INFINITY;
@@ -720,7 +738,9 @@ impl Solver {
                 let temp = row.coefficient_for(entering);
                 if temp < 0.0 {
                     let temp_ratio = -row.constant / temp;
-                    if temp_ratio < ratio {
+                    if temp_ratio < ratio
+                        || (temp_ratio == ratio && found.is_some_and(|found| *symbol < found))
+                    {
                         ratio = temp_ratio;
                         found = Some(*symbol);
                     }
@@ -742,7 +762,9 @@ impl Solver {
     /// 2) The row with a restricted basic variable and the smallest ratio of constant /
     ///    coefficient.
     ///
-    /// 3) The last unrestricted row which contains the marker.
+    /// 3) The unrestricted row with the highest id which contains the marker.
+    ///
+    /// When several rows have the same ratio, the row with the lowest id is chosen.
     ///
     /// If the marker does not exist in any row, the row map end() iterator
     /// will be returned. This indicates an internal solver error since
@@ -759,16 +781,16 @@ impl Solver {
                 continue;
             }
             if symbol.kind() == SymbolKind::External {
-                third = Some(*symbol);
+                third = third.max(Some(*symbol));
             } else if c < 0.0 {
                 let r = -row.constant / c;
-                if r < r1 {
+                if r < r1 || (r == r1 && first.is_some_and(|first| *symbol < first)) {
                     r1 = r;
                     first = Some(*symbol);
                 }
             } else {
                 let r = row.constant / c;
-                if r < r2 {
+                if r < r2 || (r == r2 && second.is_some_and(|second| *symbol < second)) {
                     r2 = r;
                     second = Some(*symbol);
                 }
