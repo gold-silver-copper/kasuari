@@ -140,14 +140,67 @@ In rough order of value:
 4. Fewer constraints from Ratatui for `Fill`/`Min` (see above).
 5. A cheaper row representation (`insert_symbol` dominates the profile) and an adaptive column index.
 
-## Other upstream context
+Longer term, a direct integer layout algorithm instead of a general floating-point solver (Ratatui's
+layouts are one-dimensional, with a documented priority order), which is what XLayout
+(`ratatui/ratatui#2196`, see below) implements. Evaluating it with this harness is likely more
+useful than writing another one.
 
-- `ratatui/kasuari#24` (draft, from July 2025) started choosing the lowest id for the entering
-  symbol and leaving row, and has the `regression_18` test. A maintainer suggested keeping symbols in
-  id order there, which is what #1 does.
-- A commenter on `ratatui/ratatui#1855` made the hang go away with a fixed hasher for the rows map
-  and a custom `Hash` for `Symbol`, without knowing why: it fixed the iteration order.
-- Nothing has been posted upstream; everything is in gold-silver-copper's forks.
+## Related upstream issues and PRs
+
+As of 2026-09-28. References are in code spans on purpose: links from these forks would show up
+on the upstream issues, and nothing has been posted upstream.
+
+### The hang and nondeterminism (fixed by #1-#3)
+
+- `ratatui/ratatui#1855` (open): the main report, `Min` layouts hang. `[Min(3); 24]` in 72 rows is
+  hard case `i1855-24`. A commenter made the hang go away with a fixed hasher for the rows map and a
+  custom `Hash` for `Symbol`, without knowing why: it fixed the iteration order.
+- `ratatui/kasuari#18` (open): kasuari's copy of it, including the 20-column `SpaceAround` table
+  that hangs while resizing (hard case `table20`).
+- `ratatui/kasuari#24` (open draft, idle since July 2025): started choosing the lowest id for the
+  entering symbol and leaving row, and has the `regression_18` test. A maintainer suggested keeping
+  symbols in id order, which is what #1 does.
+- `ratatui/ratatui#2012` (open draft, "do not merge"): the Ratatui side of `kasuari#24`, with a
+  regression test of `[Min(0); 40]` in 40 cells (`h:Start:0:0,0,40,1:Min(0)*40`). kasuari 0.4.12
+  hung in 6 of 6 runs; #3 solves it in about 0.9 s. Not yet a hard case.
+- `ratatui/kasuari#37` (merged; the same fix is `dylanede/cassowary-rs#16` and `schell/casuarius#3`,
+  both open): removed constraints left error symbols in the objective, which kept growing. In
+  kasuari since 0.4.10, so in all these branches.
+
+### Replacing the solver
+
+- `ratatui/ratatui#2196` (open draft, updated 2026-09-26): **XLayout**, a direct integer layout
+  algorithm replacing kasuari behind `Layout` (feature `xlayout`). Constraints take turns claiming
+  space in phases (min, preferred, max, overfill, forced), by priority; heuristic rather than an
+  exact optimum (e.g. `Flex::Legacy` is imitated by marking the last lowest-priority constraint).
+  Most of Ratatui's tests pass, with a few changed. The author measured about 3 us per `split` vs
+  about 100 us with kasuari. A maintainer wants it merged but hasn't had time to review; another
+  suggested proving it externally first. This harness can do that: compare its outputs with kasuari
+  on the recorded sets, run the hard cases, and benchmark (see "Directions" above).
+- `ratatui/ratatui#2189` (open): XLayout's author asks for `Percentage` to round consistently.
+  Rounding positions rather than sizes was deliberate, so that layouts don't jitter. A maintainer
+  said he'd drop kasuari for a replacement whose output is close to the current one.
+- Discussion `ratatui/ratatui#1933` (the 2023 layout engine RFC, originally issue
+  `ratatui/ratatui#374`): taffy was considered; `ratatui/ratatui#385` (closed) tried it, and it could
+  allocate outside the area and panic. In 2025 XLayout's author asked why a general floating-point
+  solver was chosen.
+- `ratatui/ratatui#2419` (open): proposal to always enable the layout cache, as layout takes most of
+  the CPU time on embedded targets.
+- `ratatui/ratatui#2620` (closed): an experimental `ratatui-layout` crate. Despite the name, it's
+  about UI coordination (hit testing, focus, scrolling), not solving layouts.
+
+### Layout behaviour a replacement has to handle
+
+These are in how Ratatui builds constraints, not in the solver:
+
+- `ratatui/ratatui#2311` (open), with PRs `ratatui/ratatui#2525` and `ratatui/ratatui#2770` (open):
+  `Spacing::Overlap` is ignored by `Ratio` and `Percentage`. `#2525` also fixes the `i16::MIN`
+  spacing overflow (gold-silver-copper/ratatui#5).
+- `ratatui/ratatui#2710` (open), with PR `ratatui/ratatui#2720`: a single `Length` with
+  `Flex::SpaceBetween` stretches to the whole area. Agreed to change for 0.31.
+- `ratatui/ratatui#827` (closed): spacing with all-`Length` constraints and stretching flex.
+- Feature requests that would affect a new engine's design: `ratatui/ratatui#899` (`MinMax`
+  constraint), `ratatui/ratatui#1906` (grid layout), `ratatui/ratatui#605` (collapsed borders).
 
 ## Latest comparison: #1 (old) vs #3 (new)
 
