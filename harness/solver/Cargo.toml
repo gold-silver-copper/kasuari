@@ -1,0 +1,16 @@
+[package]
+name = "solver-harness"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Runs two versions of kasuari side by side (see ../README.md)"
+
+[dependencies]
+# The two versions to compare, checked out by `../setup.sh OLD NEW`
+old = { package = "kasuari", path = "../worktrees/old" }
+new = { package = "kasuari", path = "../worktrees/new" }
+fastrand = "2"
+
+[profile.release]
+debug-assertions = true
+overflow-checks = true

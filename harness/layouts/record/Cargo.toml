@@ -1,0 +1,31 @@
+# Builds ../src/main.rs with worktrees/record (see ../../setup.sh)
+[package]
+name = "layouts-record"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "layouts-record"
+path = "../src/main.rs"
+
+[dependencies]
+# ratatui's main branch when the harness was written; Layout depends on kasuari ^0.4.9
+ratatui-core = { git = "https://github.com/ratatui/ratatui", rev = "54b6874357764219168c63eef2da26935b9a9609", features = ["std"] }
+ratatui-widgets = { git = "https://github.com/ratatui/ratatui", rev = "54b6874357764219168c63eef2da26935b9a9609" }
+fastrand = "2"
+libc = "0.2"
+
+[patch.crates-io]
+kasuari = { path = "../../worktrees/record" }
+
+# debug assertions catch arithmetic overflow, as in ratatui's own tests
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+
+# for benchmarks (a custom name: cargo's own `bench` profile builds into target/release)
+[profile.perf]
+inherits = "release"
+debug-assertions = false
+overflow-checks = false
