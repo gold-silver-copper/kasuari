@@ -1,5 +1,8 @@
+use core::hash::{Hash, Hasher};
+
 use hashbrown::hash_map::Entry;
-use hashbrown::HashMap;
+
+use crate::hasher::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -7,8 +10,15 @@ pub struct Row {
     pub constant: f64,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Symbol(usize, SymbolKind);
+
+/// Only the id is hashed, as it is unique.
+impl Hash for Symbol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.0);
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SymbolKind {
@@ -44,7 +54,7 @@ pub fn near_zero(value: f64) -> bool {
 impl Row {
     pub fn new(constant: f64) -> Row {
         Row {
-            cells: HashMap::new(),
+            cells: HashMap::default(),
             constant,
         }
     }
