@@ -37,6 +37,9 @@ struct Tag {
 /// from the most negative coefficient to Bland's rule, to prevent cycling.
 const MAX_DEGENERATE_PIVOTS: usize = 200;
 
+/// How far below zero the ratio test lets the constant of a row go (see `get_leaving_row`).
+const FEASIBILITY_TOLERANCE: f64 = 1e-9;
+
 #[derive(Copy, Clone)]
 enum OptimizeTarget {
     Objective,
@@ -72,6 +75,8 @@ pub struct Solver {
     objective: Row,
     artificial: Option<Row>,
     id_tick: usize,
+    /// Reused by `get_leaving_row`, to not allocate on every pivot
+    leaving_candidates: Vec<(Symbol, f64, f64)>,
 }
 
 impl Default for Solver {
@@ -96,6 +101,7 @@ impl Solver {
             objective: Row::new(0.0),
             artificial: None,
             id_tick: 1,
+            leaving_candidates: Vec::new(),
         }
     }
 
@@ -768,27 +774,43 @@ impl Solver {
     /// This method will return an iterator to the row in the row map
     /// which holds the exit symbol. If no appropriate exit symbol is
     /// found, the end() iterator will be returned. This indicates that
-    /// the objective function is unbounded. When several rows have the
-    /// same ratio, the row with the lowest id is chosen.
+    /// the objective function is unbounded.
+    ///
+    /// Uses Harris' ratio test: of the rows whose ratio is within the
+    /// feasibility tolerance of the smallest, it chooses the one with the
+    /// largest coefficient for the entering symbol, so that it doesn't pivot
+    /// on a tiny coefficient that is mostly rounding error. When several rows
+    /// have the same coefficient, the row with the lowest id is chosen.
     /// Never returns a row for an External symbol
     fn get_leaving_row(&mut self, entering: Symbol) -> Option<(Symbol, Box<Row>)> {
-        let mut ratio = f64::INFINITY;
-        let mut found = None;
+        // Harris' ratio test. First, the largest step the entering symbol can take if every row
+        // may become infeasible by up to the tolerance.
+        let mut bound = f64::INFINITY;
+        let candidates = &mut self.leaving_candidates;
+        candidates.clear();
         for (symbol, row) in &self.rows {
             if symbol.kind() != SymbolKind::External {
                 let temp = row.coefficient_for(entering);
                 if temp < 0.0 {
-                    let temp_ratio = -row.constant / temp;
-                    if temp_ratio < ratio
-                        || (temp_ratio == ratio && found.is_some_and(|found| *symbol < found))
-                    {
-                        ratio = temp_ratio;
-                        found = Some(*symbol);
-                    }
+                    bound = bound.min((row.constant + FEASIBILITY_TOLERANCE) / -temp);
+                    candidates.push((*symbol, -temp, row.constant));
                 }
             }
         }
-        found.map(|s| (s, self.rows.remove(&s).unwrap()))
+        // Then, of the rows that limit the step to at most that, the one with the largest
+        // coefficient for the entering symbol, as dividing by a small one amplifies rounding
+        // errors. Between equal coefficients, the lowest id.
+        let mut found: Option<(f64, Symbol)> = None;
+        for &(symbol, coefficient, constant) in candidates.iter() {
+            if constant / coefficient <= bound
+                && found.is_none_or(|(best, best_symbol)| {
+                    coefficient > best || (coefficient == best && symbol < best_symbol)
+                })
+            {
+                found = Some((coefficient, symbol));
+            }
+        }
+        found.map(|(_, s)| (s, self.rows.remove(&s).unwrap()))
     }
 
     /// Compute the leaving row for a marker variable.
